@@ -1,0 +1,86 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1115" />
+  <title>Add a Bill</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Login -->
+  <div id="login" class="login-wrap" style="display:none">
+    <div class="logo">🧾</div>
+    <h1>Bill Tracker</h1>
+    <p>Enter the password to add bills</p>
+    <form id="loginForm">
+      <input id="pw" type="password" placeholder="Password" autocomplete="current-password" required />
+      <button class="btn primary mt" style="width:100%" type="submit">Continue</button>
+      <p id="loginErr" class="muted mt" style="color:var(--red);min-height:18px"></p>
+    </form>
+  </div>
+
+  <!-- App -->
+  <div id="appView" style="display:none">
+    <div class="topbar">
+      <div>
+        <h1>Add a Bill</h1>
+        <div class="sub" id="roleSub"></div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <a class="btn ghost sm" id="dashLink" href="dashboard.html" style="display:none">Dashboard</a>
+        <button class="btn ghost sm" id="logout">Logout</button>
+      </div>
+    </div>
+
+    <div class="app">
+      <form id="billForm">
+        <div class="card">
+          <label>Bill type * <span class="muted" style="font-weight:400">(tap to select, you can pick more than one)</span></label>
+          <div class="row" style="gap:8px">
+            <input id="tagInput" placeholder="Add a new bill type…" />
+            <button class="btn sm" id="addTagBtn" type="button" style="flex:0 0 auto">Add</button>
+          </div>
+          <div class="chips" id="tagLibrary" style="margin-top:12px"></div>
+        </div>
+
+        <div class="card">
+          <div class="row">
+            <div>
+              <label>Amount</label>
+              <input id="amount" type="number" inputmode="decimal" step="0.01" placeholder="0.00" />
+            </div>
+            <div>
+              <label>Date</label>
+              <input id="bill_date" type="date" />
+            </div>
+          </div>
+
+          <label>Vendor / Paid to</label>
+          <input id="vendor" placeholder="e.g. Tata Power, Airtel" />
+
+          <label>Status</label>
+          <select id="status">
+            <option value="paid">Paid</option>
+            <option value="unpaid">Unpaid / To pay</option>
+          </select>
+        </div>
+
+        <div class="card">
+          <label>Attach payment screenshots</label>
+          <input id="files" type="file" accept="image/*,application/pdf" multiple capture="environment" />
+          <div class="thumbs" id="thumbs"></div>
+
+          <label>Note (optional)</label>
+          <textarea id="note" placeholder="Anything to remember about this bill"></textarea>
+        </div>
+
+        <button class="btn primary" id="submitBtn" type="submit" style="width:100%;padding:15px;font-size:16px">Save Bill</button>
+      </form>
+    </div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+  <script src="app.js"></script>
+</body>
+</html>

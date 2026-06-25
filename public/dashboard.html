@@ -1,0 +1,80 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1115" />
+  <title>Finance Dashboard</title>
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <!-- Login -->
+  <div id="login" class="login-wrap" style="display:none">
+    <div class="logo">📊</div>
+    <h1>Finance Dashboard</h1>
+    <p>Enter the finance password</p>
+    <form id="loginForm">
+      <input id="pw" type="password" placeholder="Finance password" autocomplete="current-password" required />
+      <button class="btn primary mt" style="width:100%" type="submit">Open Dashboard</button>
+      <p id="loginErr" class="muted mt" style="color:var(--red);min-height:18px"></p>
+    </form>
+  </div>
+
+  <!-- Dashboard -->
+  <div id="dashView" style="display:none">
+    <div class="topbar">
+      <div>
+        <h1>Finance Dashboard</h1>
+        <div class="sub">Bills, tags &amp; payment proofs</div>
+      </div>
+      <div style="display:flex;gap:8px">
+        <a class="btn ghost sm" href="index.html">Add bill</a>
+        <button class="btn ghost sm" id="copyAllBtn" title="Copy filtered bills as CSV to clipboard">Copy CSV</button>
+        <button class="btn ghost sm" id="exportBtn">Download CSV</button>
+        <button class="btn ghost sm" id="logout">Logout</button>
+      </div>
+    </div>
+
+    <div class="app">
+      <div class="summary" id="summary"></div>
+
+      <div class="card" style="padding:14px">
+        <div class="filters">
+          <input id="q" placeholder="🔍 Search bill type, vendor, note" />
+          <select id="fStatus">
+            <option value="">Any status</option>
+            <option value="unpaid">Unpaid</option>
+            <option value="paid">Paid</option>
+            <option value="reviewed">Reviewed</option>
+          </select>
+          <input id="fFrom" type="date" title="From date" />
+          <input id="fTo" type="date" title="To date" />
+          <button class="btn sm ghost" id="clearBtn">Clear</button>
+        </div>
+        <div style="margin-top:10px">
+          <span class="muted" style="font-size:13px">Filter by bill type:</span>
+          <div class="chips" id="tagFilter"></div>
+        </div>
+        <div class="viewbar">
+          <div class="seg" id="viewSeg">
+            <button class="seg-btn on" data-view="list">List</button>
+            <button class="seg-btn" data-view="table">Table</button>
+            <button class="seg-btn" data-view="grouped">Grouped</button>
+          </div>
+          <select id="groupBy" style="display:none">
+            <option value="tag">Group by bill type</option>
+            <option value="status">Group by status</option>
+            <option value="month">Group by month</option>
+          </select>
+        </div>
+      </div>
+
+      <div id="list"></div>
+    </div>
+  </div>
+
+  <div class="lightbox" id="lightbox"><img id="lightboxImg" src="" alt="" /></div>
+  <div class="toast" id="toast"></div>
+  <script src="dashboard.js"></script>
+</body>
+</html>

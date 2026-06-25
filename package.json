@@ -1,0 +1,17 @@
+{
+  "name": "bill-tracker",
+  "version": "1.0.0",
+  "description": "Mobile bill capture + finance dashboard with tags and screenshot attachments",
+  "type": "commonjs",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "multer": "^2.0.0"
+  }
+}
