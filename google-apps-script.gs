@@ -3,8 +3,8 @@
  *
  * Paste this into Extensions ▸ Apps Script inside the Google Sheet you want the
  * bills to appear in, then deploy it as a Web App (see README). It receives
- * each bill from the Bill Tracker server and writes/updates a row, saving the
- * attached photos to Google Drive and showing them inline in the sheet.
+ * each bill from the Bill Tracker server and writes/updates a row, showing the
+ * attached photos inline in the sheet (the photos are hosted on Cloudinary).
  *
  * One-time setup in the Apps Script editor:
  *   Project Settings ▸ Script properties ▸ add property:
@@ -12,7 +12,6 @@
  */
 
 var SHEET_NAME = 'Bills';
-var PHOTO_FOLDER = 'Bill Tracker Photos';
 var HEADERS = ['ID', 'Date', 'Bill Type', 'Vendor', 'Amount', 'Status', 'Note', 'Created', 'Proof', 'Photos →'];
 
 function doPost(e) {
@@ -66,11 +65,6 @@ function deleteRow(id) {
   if (row) sh.deleteRow(row);
 }
 
-function getPhotoFolder() {
-  var it = DriveApp.getFoldersByName(PHOTO_FOLDER);
-  return it.hasNext() ? it.next() : DriveApp.createFolder(PHOTO_FOLDER);
-}
-
 function upsert(bill) {
   var sh = getSheet();
   var existing = findRow(sh, bill.id);
@@ -86,37 +80,24 @@ function upsert(bill) {
     bill.created_at || '',
   ];
 
+  var row = existing || (sh.getLastRow() + 1);
   if (existing) {
-    // Update the text columns only; keep the already-uploaded photo cells.
-    sh.getRange(existing, 1, 1, dataRow.length).setValues([dataRow]);
+    // Update text columns only; keep the existing photo cells.
+    sh.getRange(row, 1, 1, dataRow.length).setValues([dataRow]);
     return;
   }
 
-  // New row: append data, then upload + embed photos.
-  var row = sh.getLastRow() + 1;
   sh.getRange(row, 1, 1, dataRow.length).setValues([dataRow]);
 
+  // Photos are public Cloudinary URLs — show them inline and link to the first.
   var photos = bill.photos || [];
   if (!photos.length) return;
 
-  var folder = getPhotoFolder();
-  var firstUrl = '';
-  var col = 10; // start photos at column J (after "Proof")
+  sh.getRange(row, 9).setFormula('=HYPERLINK("' + photos[0].url + '","View (' + photos.length + ')")');
+  var col = 10; // column J onward
   for (var i = 0; i < photos.length && i < 8; i++) {
-    var p = photos[i];
-    var blob = Utilities.newBlob(Utilities.base64Decode(p.data), p.mime, p.name || ('photo-' + bill.id));
-    var file = folder.createFile(blob);
-    file.setSharing(DriveApp.Access.ANYONE_WITH_LINK, DriveApp.Permission.VIEW);
-    var id = file.getId();
-    if (!firstUrl) firstUrl = 'https://drive.google.com/file/d/' + id + '/view';
-
-    // Inline thumbnail. If it ever shows blank, the Proof link still opens it.
-    sh.getRange(row, col).setFormula('=IMAGE("https://lh3.googleusercontent.com/d/' + id + '=w160")');
+    sh.getRange(row, col).setFormula('=IMAGE("' + photos[i].url + '")');
     col++;
   }
   sh.setRowHeight(row, 90);
-
-  if (firstUrl) {
-    sh.getRange(row, 9).setFormula('=HYPERLINK("' + firstUrl + '","View (' + photos.length + ')")');
-  }
 }

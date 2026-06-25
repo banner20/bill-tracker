@@ -1,41 +1,30 @@
 'use strict';
 
-// Optional one-way mirror of bills into a Google Sheet (including photos).
-//
-// It works by POSTing each bill to a Google Apps Script "web app" that you
-// deploy from inside your own Google Sheet (see google-apps-script.gs and the
-// README). If SHEETS_WEBHOOK_URL is not set, every function here is a no-op,
-// so the app runs perfectly fine without Google Sheets.
+// Optional one-way mirror of bills into a Google Sheet (photos included).
+// Posts to a Google Apps Script "web app" (see google-apps-script.gs + README).
+// No-op when SHEETS_WEBHOOK_URL is not set.
 
-const fs = require('fs');
-const path = require('path');
 const db = require('./db');
 
 const WEBHOOK_URL = process.env.SHEETS_WEBHOOK_URL || '';
 const WEBHOOK_SECRET = process.env.SHEETS_WEBHOOK_SECRET || '';
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
 
 const enabled = () => !!WEBHOOK_URL;
 
-function billPayload(billId) {
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(billId);
-  if (!bill) return null;
-  bill.tags = db.prepare(`
-    SELECT t.name FROM tags t JOIN bill_tags bt ON bt.tag_id = t.id WHERE bt.bill_id = ?
-  `).all(bill.id).map((r) => r.name);
-
-  const atts = db.prepare('SELECT filename, original_name, mime FROM attachments WHERE bill_id = ?').all(bill.id);
-  bill.photos = [];
-  for (const a of atts) {
-    try {
-      const buf = fs.readFileSync(path.join(UPLOAD_DIR, a.filename));
-      bill.photos.push({
-        name: a.original_name || a.filename,
-        mime: a.mime || 'application/octet-stream',
-        data: buf.toString('base64'),
-      });
-    } catch { /* file missing — skip */ }
-  }
+async function billPayload(billId) {
+  const r = await db.query(`
+    SELECT b.*, b.amount::float8 AS amount,
+      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
+    FROM bills b
+    LEFT JOIN bill_tags bt ON bt.bill_id = b.id
+    LEFT JOIN tags t ON t.id = bt.tag_id
+    WHERE b.id = $1 GROUP BY b.id
+  `, [billId]);
+  if (!r.rows.length) return null;
+  const bill = r.rows[0];
+  if (bill.created_at) bill.created_at = new Date(bill.created_at).toISOString();
+  const atts = await db.query('SELECT url, original_name, mime FROM attachments WHERE bill_id = $1', [billId]);
+  bill.photos = atts.rows.map((a) => ({ url: a.url, name: a.original_name, mime: a.mime }));
   return bill;
 }
 
@@ -47,23 +36,23 @@ async function post(body) {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ secret: WEBHOOK_SECRET, ...body }),
     });
-    if (!res.ok) console.error('[sheets] webhook responded', res.status, await res.text().catch(() => ''));
+    if (!res.ok) console.error('[sheets] webhook responded', res.status);
   } catch (err) {
     console.error('[sheets] sync failed:', err.message);
   }
 }
 
-// Create/update the row for a bill (with its photos).
 async function syncBill(billId) {
   if (!enabled()) return;
-  const bill = billPayload(billId);
-  if (bill) post({ action: 'upsert', bill });
+  try {
+    const bill = await billPayload(billId);
+    if (bill) await post({ action: 'upsert', bill });
+  } catch (err) { console.error('[sheets] syncBill error:', err.message); }
 }
 
-// Remove the row for a deleted bill.
 async function deleteBill(billId) {
   if (!enabled()) return;
-  post({ action: 'delete', id: billId });
+  await post({ action: 'delete', id: billId });
 }
 
 module.exports = { enabled, syncBill, deleteBill };

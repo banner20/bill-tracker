@@ -7,7 +7,7 @@ const express = require('express');
 const cookieParser = require('cookie-parser');
 const multer = require('multer');
 
-// --- Load .env (tiny parser, no dependency) ------------------------------
+// --- Load .env locally (Vercel injects env vars directly) ----------------
 (function loadEnv() {
   const envPath = path.join(__dirname, '.env');
   if (!fs.existsSync(envPath)) return;
@@ -23,6 +23,7 @@ const multer = require('multer');
 })();
 
 const db = require('./db');
+const storage = require('./storage');
 const sheets = require('./sheets');
 
 const ENTRY_PASSWORD = process.env.ENTRY_PASSWORD || 'bills123';
@@ -30,19 +31,8 @@ const FINANCE_PASSWORD = process.env.FINANCE_PASSWORD || 'finance123';
 const SESSION_SECRET = process.env.SESSION_SECRET || 'dev-secret-change-me';
 const CURRENCY = process.env.CURRENCY || '₹';
 const PORT = process.env.PORT || 3000;
-
-// Default "anchor" company tag(s) — always present, shown first, not deletable.
-// Change this (or set DEFAULT_TAGS="3061,3060 Consultancy") to seed your own.
 const DEFAULT_TAGS = (process.env.DEFAULT_TAGS || '3061')
-  .split(',')
-  .map((s) => s.trim())
-  .filter(Boolean);
-for (const name of DEFAULT_TAGS) {
-  db.prepare('INSERT INTO tags (name, pinned) VALUES (?, 1) ON CONFLICT(name) DO UPDATE SET pinned = 1').run(name);
-}
-
-const UPLOAD_DIR = path.join(__dirname, 'uploads');
-fs.mkdirSync(UPLOAD_DIR, { recursive: true });
+  .split(',').map((s) => s.trim()).filter(Boolean);
 
 // --- Auth helpers --------------------------------------------------------
 function sign(role) {
@@ -66,9 +56,27 @@ const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-function roleOf(req) {
-  return verify(req.cookies && req.cookies.auth);
+// Ensure schema + default tags exist (runs once per cold start).
+let seedPromise = null;
+function ensureReady() {
+  if (!seedPromise) {
+    seedPromise = (async () => {
+      await db.init();
+      for (const name of DEFAULT_TAGS) {
+        await db.query(
+          `INSERT INTO tags (name, pinned) VALUES ($1, true)
+           ON CONFLICT (lower(name)) DO UPDATE SET pinned = true`, [name]);
+      }
+    })().catch((err) => { seedPromise = null; throw err; });
+  }
+  return seedPromise;
 }
+app.use('/api', async (req, res, next) => {
+  try { await ensureReady(); next(); }
+  catch (err) { console.error('DB init failed:', err.message); res.status(500).json({ error: 'Database not reachable. Check DATABASE_URL.' }); }
+});
+
+function roleOf(req) { return verify(req.cookies && req.cookies.auth); }
 function requireAuth(req, res, next) {
   const role = roleOf(req);
   if (!role) return res.status(401).json({ error: 'Not logged in' });
@@ -80,6 +88,16 @@ function requireFinance(req, res, next) {
   next();
 }
 
+async function upsertTag(name) {
+  const clean = String(name).trim();
+  if (!clean) return null;
+  const r = await db.query(
+    `INSERT INTO tags (name) VALUES ($1)
+     ON CONFLICT (lower(name)) DO UPDATE SET name = tags.name
+     RETURNING id`, [clean]);
+  return r.rows[0].id;
+}
+
 // --- Login / session -----------------------------------------------------
 app.post('/api/login', (req, res) => {
   const { password } = req.body || {};
@@ -87,69 +105,41 @@ app.post('/api/login', (req, res) => {
   if (password && password === FINANCE_PASSWORD) role = 'finance';
   else if (password && password === ENTRY_PASSWORD) role = 'entry';
   if (!role) return res.status(401).json({ error: 'Wrong password' });
-  res.cookie('auth', sign(role), {
-    httpOnly: true,
-    sameSite: 'lax',
-    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days
-  });
+  res.cookie('auth', sign(role), { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
   res.json({ role });
 });
-
-app.post('/api/logout', (req, res) => {
-  res.clearCookie('auth');
-  res.json({ ok: true });
-});
-
-app.get('/api/me', (req, res) => {
-  res.json({ role: roleOf(req), currency: CURRENCY });
-});
+app.post('/api/logout', (req, res) => { res.clearCookie('auth'); res.json({ ok: true }); });
+app.get('/api/me', (req, res) => { res.json({ role: roleOf(req), currency: CURRENCY }); });
 
 // --- Tags ----------------------------------------------------------------
-app.get('/api/tags', requireAuth, (req, res) => {
-  const rows = db.prepare(`
-    SELECT t.name AS name, t.pinned AS pinned, COUNT(bt.bill_id) AS count
-    FROM tags t
-    LEFT JOIN bill_tags bt ON bt.tag_id = t.id
+app.get('/api/tags', requireAuth, async (req, res) => {
+  const r = await db.query(`
+    SELECT t.name, t.pinned, COUNT(bt.bill_id)::int AS count
+    FROM tags t LEFT JOIN bill_tags bt ON bt.tag_id = t.id
     GROUP BY t.id
     ORDER BY t.pinned DESC, count DESC, t.name ASC
-  `).all();
-  res.json(rows.map((r) => ({ ...r, pinned: !!r.pinned })));
+  `);
+  res.json(r.rows);
 });
 
-// Add a tag to the library (so it persists as a suggestion)
-app.post('/api/tags', requireAuth, (req, res) => {
+app.post('/api/tags', requireAuth, async (req, res) => {
   const name = req.body && req.body.name ? String(req.body.name).trim() : '';
   if (!name) return res.status(400).json({ error: 'Tag name required' });
-  upsertTag(name);
+  await upsertTag(name);
   res.json({ name });
 });
 
-// Remove a tag from the library. Pinned/anchor tags cannot be removed.
-app.delete('/api/tags/:name', requireAuth, (req, res) => {
-  const tag = db.prepare('SELECT id, pinned FROM tags WHERE name = ? COLLATE NOCASE').get(req.params.name);
-  if (!tag) return res.status(404).json({ error: 'Tag not found' });
-  if (tag.pinned) return res.status(400).json({ error: 'Default company tag cannot be removed' });
-  db.prepare('DELETE FROM tags WHERE id = ?').run(tag.id); // cascades to bill_tags
+app.delete('/api/tags/:name', requireAuth, async (req, res) => {
+  const r = await db.query('SELECT id, pinned FROM tags WHERE lower(name) = lower($1)', [req.params.name]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Tag not found' });
+  if (r.rows[0].pinned) return res.status(400).json({ error: 'Default company tag cannot be removed' });
+  await db.query('DELETE FROM tags WHERE id = $1', [r.rows[0].id]);
   res.json({ ok: true });
 });
 
-function upsertTag(name) {
-  const clean = String(name).trim();
-  if (!clean) return null;
-  db.prepare('INSERT OR IGNORE INTO tags (name) VALUES (?)').run(clean);
-  return db.prepare('SELECT id FROM tags WHERE name = ? COLLATE NOCASE').get(clean).id;
-}
-
-// --- File uploads --------------------------------------------------------
-const storage = multer.diskStorage({
-  destination: (req, file, cb) => cb(null, UPLOAD_DIR),
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname || '').slice(0, 10);
-    cb(null, `${Date.now()}-${crypto.randomBytes(6).toString('hex')}${ext}`);
-  },
-});
+// --- File uploads (memory -> Cloudinary) ---------------------------------
 const upload = multer({
-  storage,
+  storage: multer.memoryStorage(),
   limits: { fileSize: 15 * 1024 * 1024, files: 8 },
   fileFilter: (req, file, cb) => {
     if (/^image\//.test(file.mimetype) || file.mimetype === 'application/pdf') cb(null, true);
@@ -158,58 +148,46 @@ const upload = multer({
 });
 
 // --- Create a bill -------------------------------------------------------
-app.post('/api/bills', requireAuth, upload.array('screenshots', 8), (req, res) => {
+app.post('/api/bills', requireAuth, upload.array('screenshots', 8), async (req, res) => {
   try {
     const b = req.body || {};
-
-    // Bill type(s) come from the chip selector (sent as `tags`). They are the
-    // primary categorisation now — at least one is required.
     let tags = [];
-    if (b.tags) {
-      try { tags = JSON.parse(b.tags); } catch { tags = String(b.tags).split(','); }
-    }
+    if (b.tags) { try { tags = JSON.parse(b.tags); } catch { tags = String(b.tags).split(','); } }
     tags = tags.map((t) => String(t).trim()).filter(Boolean);
     const billType = (b.bill_type && String(b.bill_type).trim()) || tags.join(', ');
-    if (!billType) {
-      return res.status(400).json({ error: 'Pick at least one bill type' });
-    }
+    if (!billType) return res.status(400).json({ error: 'Pick at least one bill type' });
 
-    const now = new Date().toISOString();
-    const info = db.prepare(`
-      INSERT INTO bills (bill_type, vendor, amount, currency, bill_date, due_date, status, note, created_at, created_by)
-      VALUES (@bill_type, @vendor, @amount, @currency, @bill_date, @due_date, @status, @note, @created_at, @created_by)
-    `).run({
-      bill_type: billType,
-      vendor: b.vendor ? String(b.vendor).trim() : null,
-      amount: b.amount ? Number(b.amount) : null,
-      currency: CURRENCY,
-      bill_date: b.bill_date || now.slice(0, 10),
-      due_date: b.due_date || null,
-      status: ['unpaid', 'paid', 'reviewed'].includes(b.status) ? b.status : 'unpaid',
-      note: b.note ? String(b.note).trim() : null,
-      created_at: now,
-      created_by: req.role,
-    });
-    const billId = info.lastInsertRowid;
+    const ins = await db.query(`
+      INSERT INTO bills (bill_type, vendor, amount, currency, bill_date, due_date, status, note, created_by)
+      VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id
+    `, [
+      billType,
+      b.vendor ? String(b.vendor).trim() : null,
+      b.amount ? Number(b.amount) : null,
+      CURRENCY,
+      b.bill_date || new Date().toISOString().slice(0, 10),
+      b.due_date || null,
+      ['unpaid', 'paid', 'reviewed'].includes(b.status) ? b.status : 'unpaid',
+      b.note ? String(b.note).trim() : null,
+      req.role,
+    ]);
+    const billId = ins.rows[0].id;
 
-    const link = db.prepare('INSERT OR IGNORE INTO bill_tags (bill_id, tag_id) VALUES (?, ?)');
     for (const name of tags) {
-      const tagId = upsertTag(name);
-      if (tagId) link.run(billId, tagId);
+      const tagId = await upsertTag(name);
+      if (tagId) await db.query('INSERT INTO bill_tags (bill_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [billId, tagId]);
     }
 
-    // attachments
-    const addAtt = db.prepare(`
-      INSERT INTO attachments (bill_id, filename, original_name, mime, size, created_at)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `);
     for (const f of req.files || []) {
-      addAtt.run(billId, f.filename, f.originalname, f.mimetype, f.size, now);
+      if (!storage.enabled()) break;
+      const up = await storage.upload(f.buffer, { mime: f.mimetype });
+      await db.query(`
+        INSERT INTO attachments (bill_id, url, public_id, original_name, mime, size)
+        VALUES ($1,$2,$3,$4,$5,$6)
+      `, [billId, up.url, up.public_id, f.originalname, f.mimetype, f.size]);
     }
 
-    // Mirror to Google Sheet (no-op if not configured). Fire-and-forget.
     sheets.syncBill(billId);
-
     res.json({ id: billId });
   } catch (err) {
     console.error(err);
@@ -217,90 +195,93 @@ app.post('/api/bills', requireAuth, upload.array('screenshots', 8), (req, res) =
   }
 });
 
+// --- Attachment loader ----------------------------------------------------
+async function attachmentsFor(billIds) {
+  if (!billIds.length) return {};
+  const r = await db.query(
+    'SELECT id, bill_id, url, mime, original_name FROM attachments WHERE bill_id = ANY($1)', [billIds]);
+  const map = {};
+  for (const a of r.rows) (map[a.bill_id] = map[a.bill_id] || []).push(a);
+  return map;
+}
+
 // --- List bills with filters --------------------------------------------
-app.get('/api/bills', requireAuth, (req, res) => {
+app.get('/api/bills', requireAuth, async (req, res) => {
   const { tag, type, status, q, from, to } = req.query;
   const where = [];
-  const params = {};
+  const params = [];
+  const p = (v) => { params.push(v); return `$${params.length}`; };
 
-  if (type) { where.push('b.bill_type = @type'); params.type = type; }
-  if (status) { where.push('b.status = @status'); params.status = status; }
-  if (from) { where.push('b.bill_date >= @from'); params.from = from; }
-  if (to) { where.push('b.bill_date <= @to'); params.to = to; }
-  if (q) {
-    where.push('(b.bill_type LIKE @q OR b.vendor LIKE @q OR b.note LIKE @q)');
-    params.q = `%${q}%`;
-  }
-  if (tag) {
-    where.push(`b.id IN (
-      SELECT bt.bill_id FROM bill_tags bt
-      JOIN tags t ON t.id = bt.tag_id
-      WHERE t.name = @tag COLLATE NOCASE
-    )`);
-    params.tag = tag;
-  }
+  if (type) where.push(`b.bill_type = ${p(type)}`);
+  if (status) where.push(`b.status = ${p(status)}`);
+  if (from) where.push(`b.bill_date >= ${p(from)}`);
+  if (to) where.push(`b.bill_date <= ${p(to)}`);
+  if (q) where.push(`(b.bill_type ILIKE ${p('%' + q + '%')} OR b.vendor ILIKE $${params.length} OR b.note ILIKE $${params.length})`);
+  if (tag) where.push(`b.id IN (SELECT bt.bill_id FROM bill_tags bt JOIN tags t ON t.id = bt.tag_id WHERE lower(t.name) = lower(${p(tag)}))`);
 
   const sql = `
-    SELECT b.* FROM bills b
+    SELECT b.*, COALESCE(b.amount::float8, NULL) AS amount,
+      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
+    FROM bills b
+    LEFT JOIN bill_tags bt ON bt.bill_id = b.id
+    LEFT JOIN tags t ON t.id = bt.tag_id
     ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-    ORDER BY b.bill_date DESC, b.id DESC
+    GROUP BY b.id
+    ORDER BY b.bill_date DESC NULLS LAST, b.id DESC
     LIMIT 1000
   `;
-  const bills = db.prepare(sql).all(params);
+  const r = await db.query(sql, params);
+  const bills = r.rows;
+  const attMap = await attachmentsFor(bills.map((x) => x.id));
+  for (const bill of bills) bill.attachments = attMap[bill.id] || [];
 
-  const tagStmt = db.prepare(`
-    SELECT t.name FROM tags t JOIN bill_tags bt ON bt.tag_id = t.id
-    WHERE bt.bill_id = ? ORDER BY t.name
-  `);
-  const attStmt = db.prepare('SELECT id, filename, mime, original_name FROM attachments WHERE bill_id = ?');
-  for (const bill of bills) {
-    bill.tags = tagStmt.all(bill.id).map((r) => r.name);
-    bill.attachments = attStmt.all(bill.id);
-  }
-
-  // summary
-  const total = bills.reduce((s, x) => s + (x.amount || 0), 0);
+  const total = bills.reduce((s, x) => s + (Number(x.amount) || 0), 0);
   res.json({ bills, count: bills.length, total, currency: CURRENCY });
 });
 
-app.get('/api/bills/:id', requireAuth, (req, res) => {
-  const bill = db.prepare('SELECT * FROM bills WHERE id = ?').get(req.params.id);
-  if (!bill) return res.status(404).json({ error: 'Not found' });
-  bill.tags = db.prepare(`
-    SELECT t.name FROM tags t JOIN bill_tags bt ON bt.tag_id = t.id WHERE bt.bill_id = ?
-  `).all(bill.id).map((r) => r.name);
-  bill.attachments = db.prepare('SELECT id, filename, mime, original_name FROM attachments WHERE bill_id = ?').all(bill.id);
+app.get('/api/bills/:id', requireAuth, async (req, res) => {
+  const r = await db.query(`
+    SELECT b.*, b.amount::float8 AS amount,
+      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
+    FROM bills b
+    LEFT JOIN bill_tags bt ON bt.bill_id = b.id
+    LEFT JOIN tags t ON t.id = bt.tag_id
+    WHERE b.id = $1 GROUP BY b.id
+  `, [req.params.id]);
+  if (!r.rows.length) return res.status(404).json({ error: 'Not found' });
+  const bill = r.rows[0];
+  bill.attachments = (await attachmentsFor([bill.id]))[bill.id] || [];
   res.json(bill);
 });
 
 // --- Update status (finance) --------------------------------------------
-app.patch('/api/bills/:id', requireAuth, requireFinance, (req, res) => {
+app.patch('/api/bills/:id', requireAuth, requireFinance, async (req, res) => {
   const { status } = req.body || {};
-  if (!['unpaid', 'paid', 'reviewed'].includes(status)) {
-    return res.status(400).json({ error: 'Invalid status' });
-  }
-  const info = db.prepare('UPDATE bills SET status = ? WHERE id = ?').run(status, req.params.id);
-  if (!info.changes) return res.status(404).json({ error: 'Not found' });
+  if (!['unpaid', 'paid', 'reviewed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const r = await db.query('UPDATE bills SET status = $1 WHERE id = $2', [status, req.params.id]);
+  if (!r.rowCount) return res.status(404).json({ error: 'Not found' });
   sheets.syncBill(req.params.id);
   res.json({ ok: true });
 });
 
 // --- Delete (finance) ----------------------------------------------------
-app.delete('/api/bills/:id', requireAuth, requireFinance, (req, res) => {
-  const atts = db.prepare('SELECT filename FROM attachments WHERE bill_id = ?').all(req.params.id);
-  db.prepare('DELETE FROM bills WHERE id = ?').run(req.params.id);
-  for (const a of atts) {
-    fs.unlink(path.join(UPLOAD_DIR, a.filename), () => {});
-  }
+app.delete('/api/bills/:id', requireAuth, requireFinance, async (req, res) => {
+  const atts = await db.query('SELECT public_id FROM attachments WHERE bill_id = $1', [req.params.id]);
+  await db.query('DELETE FROM bills WHERE id = $1', [req.params.id]);
+  for (const a of atts.rows) storage.destroy(a.public_id);
   sheets.deleteBill(req.params.id);
   res.json({ ok: true });
 });
 
 // --- CSV export (finance) ------------------------------------------------
-app.get('/api/export.csv', requireAuth, requireFinance, (req, res) => {
-  const bills = db.prepare('SELECT * FROM bills ORDER BY bill_date DESC, id DESC').all();
-  const tagStmt = db.prepare(`
-    SELECT t.name FROM tags t JOIN bill_tags bt ON bt.tag_id = t.id WHERE bt.bill_id = ?
+app.get('/api/export.csv', requireAuth, requireFinance, async (req, res) => {
+  const r = await db.query(`
+    SELECT b.*, b.amount::float8 AS amount,
+      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
+    FROM bills b
+    LEFT JOIN bill_tags bt ON bt.bill_id = b.id
+    LEFT JOIN tags t ON t.id = bt.tag_id
+    GROUP BY b.id ORDER BY b.bill_date DESC NULLS LAST, b.id DESC
   `);
   const esc = (v) => {
     if (v == null) return '';
@@ -309,37 +290,33 @@ app.get('/api/export.csv', requireAuth, requireFinance, (req, res) => {
   };
   const header = ['id', 'date', 'type', 'vendor', 'amount', 'currency', 'status', 'due_date', 'tags', 'note', 'created_at'];
   const lines = [header.join(',')];
-  for (const b of bills) {
-    const tags = tagStmt.all(b.id).map((r) => r.name).join('; ');
-    lines.push([b.id, b.bill_date, b.bill_type, b.vendor, b.amount, b.currency, b.status, b.due_date, tags, b.note, b.created_at].map(esc).join(','));
+  for (const b of r.rows) {
+    lines.push([b.id, b.bill_date, b.bill_type, b.vendor, b.amount, b.currency, b.status, b.due_date,
+      (b.tags || []).join('; '), b.note, b.created_at && new Date(b.created_at).toISOString()].map(esc).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(lines.join('\n'));
 });
 
-// --- Serve attachments (auth-protected) ---------------------------------
-app.get('/uploads/:file', requireAuth, (req, res) => {
-  const safe = path.basename(req.params.file);
-  res.sendFile(path.join(UPLOAD_DIR, safe), (err) => {
-    if (err) res.status(404).end();
-  });
-});
-
 // --- Static frontend -----------------------------------------------------
 app.use(express.static(path.join(__dirname, 'public')));
 
-// Multer / error handler
 app.use((err, req, res, next) => {
   if (err) return res.status(400).json({ error: err.message || 'Upload error' });
   next();
 });
 
-app.listen(PORT, () => {
-  console.log(`\n  Bill Tracker running:  http://localhost:${PORT}`);
-  console.log(`  Entry (phone) page:    http://localhost:${PORT}/`);
-  console.log(`  Finance dashboard:     http://localhost:${PORT}/dashboard.html`);
-  console.log(`\n  Entry password:   ${ENTRY_PASSWORD}`);
-  console.log(`  Finance password: ${FINANCE_PASSWORD}`);
-  console.log(`  Google Sheet sync: ${sheets.enabled() ? 'ON' : 'off (set SHEETS_WEBHOOK_URL to enable)'}\n`);
-});
+// Only listen when run directly (local dev). On Vercel the app is imported.
+if (require.main === module) {
+  app.listen(PORT, () => {
+    console.log(`\n  Bill Tracker running:  http://localhost:${PORT}`);
+    console.log(`  Entry password:   ${ENTRY_PASSWORD}`);
+    console.log(`  Finance password: ${FINANCE_PASSWORD}`);
+    console.log(`  Database:          ${process.env.DATABASE_URL ? 'configured' : 'NOT SET (DATABASE_URL)'}`);
+    console.log(`  Cloudinary:        ${storage.enabled() ? 'configured' : 'NOT SET (CLOUDINARY_URL)'}`);
+    console.log(`  Google Sheet sync: ${sheets.enabled() ? 'ON' : 'off'}\n`);
+  });
+}
+
+module.exports = app;

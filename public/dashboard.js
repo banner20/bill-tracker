@@ -230,16 +230,16 @@ window.openFirst = (id) => {
   const b = currentBills.find((x) => x.id === id);
   const a = b && b.attachments && b.attachments[0];
   if (!a) return;
-  if ((a.mime || '').startsWith('image/')) openImg('/uploads/' + a.filename);
-  else window.open('/uploads/' + a.filename, '_blank');
+  if ((a.mime || '').startsWith('image/')) openImg(a.url);
+  else window.open(a.url, '_blank');
 };
 
 function renderBill(b) {
   const atts = (b.attachments || []).map((a) => {
     if ((a.mime || '').startsWith('image/')) {
-      return `<a href="#" onclick="openImg('/uploads/${a.filename}');return false"><img src="/uploads/${a.filename}" alt=""></a>`;
+      return `<a href="#" onclick="openImg('${a.url}');return false"><img src="${a.url}" alt=""></a>`;
     }
-    return `<a href="/uploads/${a.filename}" target="_blank"><span class="pdf">PDF</span></a>`;
+    return `<a href="${a.url}" target="_blank"><span class="pdf">PDF</span></a>`;
   }).join('');
 
   return `
