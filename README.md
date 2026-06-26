@@ -85,4 +85,4 @@ Pushes every saved bill into a Google Sheet so finance can just watch the sheet 
 
 ## Tech
 
-Node + Express + `pg` (Postgres/Supabase) + Cloudinary. Plain HTML/CSS/JS frontend in `public/`, no build step.
+Node + Express + `pg` (Postgres/Supabase) + Supabase Storage. Plain HTML/CSS/JS frontend in `public/`, no build step.
