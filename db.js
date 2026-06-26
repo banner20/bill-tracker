@@ -3,6 +3,10 @@
 // Postgres data layer (works with Supabase). Connection comes from DATABASE_URL.
 // On Vercel/serverless, use the Supabase "Transaction pooler" connection string.
 
+// Supabase's pooler uses a non-standard cert chain that Node rejects by default.
+// Must be set before pg is loaded so it applies to all TLS connections.
+process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+
 const { Pool } = require('pg');
 
 const connectionString = process.env.DATABASE_URL;
