@@ -6,6 +6,8 @@ let currency = '₹';
 let view = 'list';
 let groupBy = 'tag';
 let currentBills = [];
+let sortKey = 'bill_date';
+let sortDir = 'desc';
 
 function toast(msg, isErr) {
   const t = $('toast');
@@ -180,24 +182,59 @@ function billTypeHtml(b) {
   const types = (b.tags && b.tags.length) ? b.tags : (b.bill_type ? [b.bill_type] : []);
   return types.map((t) => `<span class="tag-pill">${esc(t)}</span>`).join(' ');
 }
-function tableRows(bills) {
-  return bills.map((b) => {
-    const att = (b.attachments || []).length
-      ? `<span class="mini-att" onclick="openFirst(${b.id})" title="View proof">📎 ${b.attachments.length}</span>` : '';
-    return `<tr>
-      <td>${esc(b.bill_date || '')}</td>
-      <td>${billTypeHtml(b)}</td>
-      <td>${esc(b.vendor || '')}</td>
-      <td class="amount">${money(b.amount)}</td>
-      <td><span class="status ${b.status}">${b.status}</span></td>
-      <td>${att}</td>
-    </tr>`;
-  }).join('');
+// Spreadsheet columns. `get` extracts the sortable/value for a bill.
+const COLUMNS = [
+  { key: 'bill_date', label: 'Date', get: (b) => b.bill_date || '' },
+  { key: 'bill_type', label: 'Bill type', get: (b) => (b.tags && b.tags.length ? b.tags.join(', ') : b.bill_type || ''), html: (b) => billTypeHtml(b) },
+  { key: 'vendor', label: 'Vendor', get: (b) => b.vendor || '' },
+  { key: 'amount', label: 'Amount', num: true, get: (b) => (b.amount == null ? null : Number(b.amount)), html: (b) => money(b.amount), cls: 'amount' },
+  { key: 'status', label: 'Status', get: (b) => b.status || '', html: (b) => `<span class="status ${b.status}">${b.status}</span>` },
+  { key: 'note', label: 'Note', get: (b) => b.note || '' },
+  { key: 'attachments', label: 'Proof', sortable: false, get: () => '', html: (b) => (b.attachments || []).length ? `<span class="mini-att" onclick="openFirst(${b.id})" title="View proof">📎 ${b.attachments.length}</span>` : '' },
+];
+
+function sortBills(bills) {
+  const col = COLUMNS.find((c) => c.key === sortKey);
+  if (!col) return bills;
+  const dir = sortDir === 'asc' ? 1 : -1;
+  return [...bills].sort((a, b) => {
+    let x = col.get(a), y = col.get(b);
+    if (col.num) { x = x == null ? -Infinity : x; y = y == null ? -Infinity : y; return (x - y) * dir; }
+    return String(x).localeCompare(String(y), undefined, { numeric: true, sensitivity: 'base' }) * dir;
+  });
 }
+
+window.sortBy = (key) => {
+  const col = COLUMNS.find((c) => c.key === key);
+  if (!col || col.sortable === false) return;
+  if (sortKey === key) sortDir = sortDir === 'asc' ? 'desc' : 'asc';
+  else { sortKey = key; sortDir = key === 'amount' || key === 'bill_date' ? 'desc' : 'asc'; }
+  render();
+};
+
+function tableRows(bills) {
+  return bills.map((b) => `<tr>${
+    COLUMNS.map((c) => `<td${c.cls ? ` class="${c.cls}"` : ''}>${c.html ? c.html(b) : esc(c.get(b))}</td>`).join('')
+  }</tr>`).join('');
+}
+
 function renderTable(list) {
+  const bills = sortBills(currentBills);
+  const head = COLUMNS.map((c) => {
+    const arrow = sortKey === c.key ? (sortDir === 'asc' ? ' ▲' : ' ▼') : '';
+    const click = c.sortable === false ? '' : ` class="sortable" onclick="sortBy('${c.key}')"`;
+    return `<th${click}>${c.label}${arrow}</th>`;
+  }).join('');
+  const total = sum(currentBills);
+  const foot = COLUMNS.map((c) => {
+    if (c.key === 'amount') return `<td class="amount"><strong>${money(total)}</strong></td>`;
+    if (c.key === 'bill_date') return `<td class="muted">${bills.length} row${bills.length === 1 ? '' : 's'}</td>`;
+    return '<td></td>';
+  }).join('');
   list.innerHTML = `<div class="table-wrap"><table class="bills">
-    <thead><tr><th>Date</th><th>Bill type</th><th>Vendor</th><th>Amount</th><th>Status</th><th>Proof</th></tr></thead>
-    <tbody>${tableRows(currentBills)}</tbody>
+    <thead><tr>${head}</tr></thead>
+    <tbody>${tableRows(bills)}</tbody>
+    <tfoot><tr>${foot}</tr></tfoot>
   </table></div>`;
 }
 

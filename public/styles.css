@@ -214,6 +214,10 @@ table.bills tr:last-child td { border-bottom: none; }
 table.bills td.amount { font-weight: 700; text-align: right; }
 table.bills .tag-pill { margin: 0 4px 0 0; }
 table.bills .mini-att { color: var(--accent); cursor: pointer; }
+table.bills th.sortable { cursor: pointer; user-select: none; }
+table.bills th.sortable:hover { color: var(--text); }
+table.bills tfoot td { background: var(--surface-2); border-top: 2px solid var(--border); font-size: 13px; color: var(--muted); }
+table.bills tfoot td.amount { color: var(--text); font-weight: 700; }
 
 /* Grouped view */
 .group { margin-bottom: 18px; }
