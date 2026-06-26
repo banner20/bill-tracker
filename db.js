@@ -72,6 +72,17 @@ function init() {
       CREATE INDEX IF NOT EXISTS idx_bill_tags_bill ON bill_tags(bill_id);
       CREATE INDEX IF NOT EXISTS idx_attach_bill    ON attachments(bill_id);
       CREATE INDEX IF NOT EXISTS idx_bills_status   ON bills(status);
+
+      CREATE TABLE IF NOT EXISTS tg_pending (
+        id         TEXT PRIMARY KEY,
+        chat_id    BIGINT NOT NULL,
+        data       JSONB NOT NULL,
+        url        TEXT,
+        public_id  TEXT,
+        mime       TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      DELETE FROM tg_pending WHERE created_at < now() - interval '1 day';
     `).catch((err) => {
       initPromise = null; // allow retry on next request
       throw err;

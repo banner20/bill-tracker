@@ -25,6 +25,7 @@ const multer = require('multer');
 const db = require('./db');
 const storage = require('./storage');
 const sheets = require('./sheets');
+const telegram = require('./telegram');
 
 const ENTRY_PASSWORD = process.env.ENTRY_PASSWORD || 'bills123';
 const FINANCE_PASSWORD = process.env.FINANCE_PASSWORD || 'finance123';
@@ -298,6 +299,30 @@ app.get('/api/export.csv', requireAuth, requireFinance, async (req, res) => {
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(lines.join('\n'));
+});
+
+// --- Telegram webhook ----------------------------------------------------
+app.post('/api/telegram', async (req, res) => {
+  res.sendStatus(200); // acknowledge immediately so Telegram doesn't retry
+  if (!telegram.enabled()) return;
+  try { await telegram.handleUpdate(req.body); }
+  catch (e) { console.error('Telegram handler error:', e.message); }
+});
+
+// One-time setup: registers the webhook URL with Telegram.
+// Visit /api/telegram/setup in a browser after deploying.
+app.get('/api/telegram/setup', async (req, res) => {
+  if (!telegram.enabled()) return res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set' });
+  const host = req.headers.host;
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const webhookUrl = `${proto}://${host}/api/telegram`;
+  const r = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] }),
+  });
+  const data = await r.json();
+  res.json({ webhookUrl, telegram: data });
 });
 
 // --- Static frontend -----------------------------------------------------
