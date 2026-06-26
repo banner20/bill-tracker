@@ -284,11 +284,16 @@ function requireExportAuth(req, res, next) {
   next();
 }
 
-// Shared query for exports
+// Shared query for exports (includes attachment URLs)
 async function fetchAllBills() {
   const r = await db.query(`
     SELECT b.*, b.amount::float8 AS amount,
-      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
+      COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags,
+      COALESCE(
+        (SELECT json_agg(json_build_object('url', a.url, 'mime', a.mime) ORDER BY a.id)
+         FROM attachments a WHERE a.bill_id = b.id),
+        '[]'::json
+      ) AS attachments
     FROM bills b
     LEFT JOIN bill_tags bt ON bt.bill_id = b.id
     LEFT JOIN tags t ON t.id = bt.tag_id
@@ -301,11 +306,12 @@ async function fetchAllBills() {
 app.get('/api/export.csv', requireExportAuth, async (req, res) => {
   const bills = await fetchAllBills();
   const esc = (v) => { if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
-  const header = ['id', 'date', 'type', 'vendor', 'amount', 'currency', 'status', 'due_date', 'tags', 'note', 'created_at'];
+  const header = ['id', 'date', 'type', 'vendor', 'amount', 'currency', 'status', 'due_date', 'tags', 'note', 'created_at', 'attachments'];
   const lines = [header.join(',')];
   for (const b of bills) {
+    const attUrls = (b.attachments || []).map((a) => a.url).join('; ');
     lines.push([b.id, b.bill_date, b.bill_type, b.vendor, b.amount, b.currency, b.status, b.due_date,
-      (b.tags || []).join('; '), b.note, b.created_at && new Date(b.created_at).toISOString()].map(esc).join(','));
+      (b.tags || []).join('; '), b.note, b.created_at && new Date(b.created_at).toISOString(), attUrls].map(esc).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.csv"`);
@@ -315,18 +321,30 @@ app.get('/api/export.csv', requireExportAuth, async (req, res) => {
 // --- XLSX export ---------------------------------------------------------
 app.get('/api/export.xlsx', requireAuth, requireFinance, async (req, res) => {
   const bills = await fetchAllBills();
-  const headers = ['ID', 'Date', 'Bill Type', 'Vendor', 'Amount', 'Currency', 'Status', 'Due Date', 'Tags', 'Note'];
+  const headers = ['ID', 'Date', 'Bill Type', 'Vendor', 'Amount', 'Currency', 'Status', 'Due Date', 'Tags', 'Note', 'Proof'];
   const rows = [
     headers,
-    ...bills.map((b) => [
-      b.id, b.bill_date || '', b.bill_type || '', b.vendor || '',
-      b.amount != null ? Number(b.amount) : '',
-      b.currency || '₹', b.status || '', b.due_date || '',
-      (b.tags || []).join('; '), b.note || '',
-    ]),
+    ...bills.map((b) => {
+      const atts = b.attachments || [];
+      return [
+        b.id, b.bill_date || '', b.bill_type || '', b.vendor || '',
+        b.amount != null ? Number(b.amount) : '',
+        b.currency || '₹', b.status || '', b.due_date || '',
+        (b.tags || []).join('; '), b.note || '',
+        atts.length ? atts.map((a) => a.url).join('\n') : '',
+      ];
+    }),
   ];
   const ws = XLSX.utils.aoa_to_sheet(rows);
-  ws['!cols'] = [6, 12, 18, 20, 12, 8, 10, 12, 22, 30].map((wch) => ({ wch }));
+  ws['!cols'] = [6, 12, 18, 20, 12, 8, 10, 12, 22, 30, 60].map((wch) => ({ wch }));
+
+  // Make each proof cell a clickable hyperlink (first attachment URL)
+  bills.forEach((b, i) => {
+    const atts = b.attachments || [];
+    if (!atts.length) return;
+    const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 10 }); // row i+1 (skip header), col 10 = Proof
+    if (ws[cellRef]) ws[cellRef].l = { Target: atts[0].url, Tooltip: 'Open proof' };
+  });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Bills');
   const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
