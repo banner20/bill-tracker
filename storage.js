@@ -1,31 +1,51 @@
 'use strict';
 
-// Image/PDF storage on Cloudinary. Configured via CLOUDINARY_URL
-// (cloudinary://<api_key>:<api_secret>@<cloud_name>), which the Cloudinary SDK
-// reads automatically from the environment.
+// File storage via Supabase Storage. Configured via SUPABASE_URL + SUPABASE_SERVICE_KEY.
 
-const cloudinary = require('cloudinary').v2;
+const { createClient } = require('@supabase/supabase-js');
 
-const enabled = () => !!process.env.CLOUDINARY_URL;
+const BUCKET = 'attachments';
 
-// Upload a file buffer; returns { url, public_id }.
-function upload(buffer, { folder = 'bill-tracker', mime = '' } = {}) {
-  return new Promise((resolve, reject) => {
-    const isPdf = mime === 'application/pdf';
-    const stream = cloudinary.uploader.upload_stream(
-      { folder, resource_type: isPdf ? 'image' : 'image' }, // image works for both png/jpg; pdf via image w/ pages
-      (err, result) => {
-        if (err) return reject(err);
-        resolve({ url: result.secure_url, public_id: result.public_id });
-      }
-    );
-    stream.end(buffer);
-  });
+function getClient() {
+  const url = process.env.SUPABASE_URL;
+  const key = process.env.SUPABASE_SERVICE_KEY;
+  if (!url || !key) return null;
+  return createClient(url, key);
+}
+
+const enabled = () => !!(process.env.SUPABASE_URL && process.env.SUPABASE_SERVICE_KEY);
+
+async function initBucket() {
+  const client = getClient();
+  if (!client) return;
+  const { data: buckets } = await client.storage.listBuckets();
+  if (!buckets || !buckets.find((b) => b.name === BUCKET)) {
+    const { error } = await client.storage.createBucket(BUCKET, { public: true });
+    if (error) throw error;
+  }
+}
+
+async function upload(buffer, { mime = '', folder = 'bills' } = {}) {
+  const client = getClient();
+  const ext = mime === 'application/pdf' ? 'pdf' : (mime.split('/')[1] || 'bin');
+  const filePath = `${folder}/${Date.now()}-${Math.random().toString(36).slice(2)}.${ext}`;
+
+  const { data, error } = await client.storage
+    .from(BUCKET)
+    .upload(filePath, buffer, { contentType: mime, upsert: false });
+
+  if (error) throw error;
+
+  const { data: { publicUrl } } = client.storage.from(BUCKET).getPublicUrl(data.path);
+  return { url: publicUrl, public_id: data.path };
 }
 
 async function destroy(publicId) {
-  if (!publicId) return;
-  try { await cloudinary.uploader.destroy(publicId); } catch (e) { /* ignore */ }
+  try {
+    const client = getClient();
+    if (!client || !publicId) return;
+    await client.storage.from(BUCKET).remove([publicId]);
+  } catch {}
 }
 
-module.exports = { enabled, upload, destroy };
+module.exports = { enabled, upload, destroy, initBucket };

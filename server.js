@@ -62,6 +62,7 @@ function ensureReady() {
   if (!seedPromise) {
     seedPromise = (async () => {
       await db.init();
+      if (storage.enabled()) await storage.initBucket();
       for (const name of DEFAULT_TAGS) {
         await db.query(
           `INSERT INTO tags (name, pinned) VALUES ($1, true)
@@ -314,7 +315,7 @@ if (require.main === module) {
     console.log(`  Entry password:   ${ENTRY_PASSWORD}`);
     console.log(`  Finance password: ${FINANCE_PASSWORD}`);
     console.log(`  Database:          ${process.env.DATABASE_URL ? 'configured' : 'NOT SET (DATABASE_URL)'}`);
-    console.log(`  Cloudinary:        ${storage.enabled() ? 'configured' : 'NOT SET (CLOUDINARY_URL)'}`);
+    console.log(`  File storage:      ${storage.enabled() ? 'Supabase Storage' : 'NOT SET (SUPABASE_URL + SUPABASE_SERVICE_KEY)'}`);
     console.log(`  Google Sheet sync: ${sheets.enabled() ? 'ON' : 'off'}\n`);
   });
 }

@@ -9,7 +9,7 @@
     "dev": "node --watch server.js"
   },
   "dependencies": {
-    "cloudinary": "^2.5.1",
+    "@supabase/supabase-js": "^2.49.0",
     "cookie-parser": "^1.4.6",
     "express": "^4.19.2",
     "multer": "^2.0.0",
