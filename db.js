@@ -12,10 +12,7 @@ if (!connectionString) {
 
 const pool = new Pool({
   connectionString,
-  // Supabase requires SSL; it uses a certificate that node does not bundle.
-  ssl: connectionString && /supabase|sslmode=require/i.test(connectionString)
-    ? { rejectUnauthorized: false }
-    : false,
+  ssl: connectionString ? { rejectUnauthorized: false } : false,
   max: 5,
 });
 
