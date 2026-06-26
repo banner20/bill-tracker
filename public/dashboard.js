@@ -115,7 +115,24 @@ $('clearBtn').addEventListener('click', () => {
   loadTags();
   refresh();
 });
-$('exportBtn').addEventListener('click', () => { window.location = '/api/export.csv'; });
+$('exportXlsxBtn').addEventListener('click', () => { window.location = '/api/export.xlsx'; });
+
+$('sheetsBtn').addEventListener('click', async () => {
+  try {
+    const res = await api('/api/sheets-url');
+    if (!res.ok) {
+      const { error } = await res.json();
+      toast(error || 'Set EXPORT_TOKEN in Vercel env vars first', true);
+      return;
+    }
+    const { formula } = await res.json();
+    const ok = await copyText(formula);
+    toast(ok ? '✓ Formula copied — paste it in cell A1 of your Sheet' : 'Open Sheets and paste: ' + formula, !ok);
+    window.open('https://sheets.new', '_blank');
+  } catch {
+    toast('Could not get Sheets URL', true);
+  }
+});
 
 async function loadTags() {
   const tags = await (await api('/api/tags')).json();

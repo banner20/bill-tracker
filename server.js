@@ -22,6 +22,7 @@ const multer = require('multer');
   }
 })();
 
+const XLSX = require('xlsx');
 const db = require('./db');
 const storage = require('./storage');
 const sheets = require('./sheets');
@@ -275,8 +276,16 @@ app.delete('/api/bills/:id', requireAuth, requireFinance, async (req, res) => {
   res.json({ ok: true });
 });
 
-// --- CSV export (finance) ------------------------------------------------
-app.get('/api/export.csv', requireAuth, requireFinance, async (req, res) => {
+// --- Export auth: finance cookie OR EXPORT_TOKEN query param -------------
+function requireExportAuth(req, res, next) {
+  const exportToken = process.env.EXPORT_TOKEN;
+  if (exportToken && req.query.token === exportToken) return next();
+  if (roleOf(req) !== 'finance') return res.status(403).json({ error: 'Finance access required' });
+  next();
+}
+
+// Shared query for exports
+async function fetchAllBills() {
   const r = await db.query(`
     SELECT b.*, b.amount::float8 AS amount,
       COALESCE(array_agg(DISTINCT t.name) FILTER (WHERE t.name IS NOT NULL), '{}') AS tags
@@ -285,20 +294,54 @@ app.get('/api/export.csv', requireAuth, requireFinance, async (req, res) => {
     LEFT JOIN tags t ON t.id = bt.tag_id
     GROUP BY b.id ORDER BY b.bill_date DESC NULLS LAST, b.id DESC
   `);
-  const esc = (v) => {
-    if (v == null) return '';
-    const s = String(v);
-    return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
-  };
+  return r.rows;
+}
+
+// --- CSV export ----------------------------------------------------------
+app.get('/api/export.csv', requireExportAuth, async (req, res) => {
+  const bills = await fetchAllBills();
+  const esc = (v) => { if (v == null) return ''; const s = String(v); return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s; };
   const header = ['id', 'date', 'type', 'vendor', 'amount', 'currency', 'status', 'due_date', 'tags', 'note', 'created_at'];
   const lines = [header.join(',')];
-  for (const b of r.rows) {
+  for (const b of bills) {
     lines.push([b.id, b.bill_date, b.bill_type, b.vendor, b.amount, b.currency, b.status, b.due_date,
       (b.tags || []).join('; '), b.note, b.created_at && new Date(b.created_at).toISOString()].map(esc).join(','));
   }
   res.setHeader('Content-Type', 'text/csv; charset=utf-8');
   res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.csv"`);
   res.send(lines.join('\n'));
+});
+
+// --- XLSX export ---------------------------------------------------------
+app.get('/api/export.xlsx', requireAuth, requireFinance, async (req, res) => {
+  const bills = await fetchAllBills();
+  const headers = ['ID', 'Date', 'Bill Type', 'Vendor', 'Amount', 'Currency', 'Status', 'Due Date', 'Tags', 'Note'];
+  const rows = [
+    headers,
+    ...bills.map((b) => [
+      b.id, b.bill_date || '', b.bill_type || '', b.vendor || '',
+      b.amount != null ? Number(b.amount) : '',
+      b.currency || '₹', b.status || '', b.due_date || '',
+      (b.tags || []).join('; '), b.note || '',
+    ]),
+  ];
+  const ws = XLSX.utils.aoa_to_sheet(rows);
+  ws['!cols'] = [6, 12, 18, 20, 12, 8, 10, 12, 22, 30].map((wch) => ({ wch }));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Bills');
+  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.xlsx"`);
+  res.send(buf);
+});
+
+// --- Google Sheets IMPORTDATA URL ----------------------------------------
+app.get('/api/sheets-url', requireAuth, requireFinance, (req, res) => {
+  const exportToken = process.env.EXPORT_TOKEN;
+  if (!exportToken) return res.status(400).json({ error: 'Set EXPORT_TOKEN in your Vercel environment variables first' });
+  const proto = req.headers['x-forwarded-proto'] || 'https';
+  const csvUrl = `${proto}://${req.headers.host}/api/export.csv?token=${exportToken}`;
+  res.json({ formula: `=IMPORTDATA("${csvUrl}")`, csvUrl });
 });
 
 // --- Telegram webhook ----------------------------------------------------
