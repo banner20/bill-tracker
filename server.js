@@ -439,10 +439,10 @@ app.get('/api/sheets-url', requireAuth, requireFinance, (req, res) => {
 
 // --- Telegram webhook ----------------------------------------------------
 app.post('/api/telegram', async (req, res) => {
-  res.sendStatus(200); // acknowledge immediately so Telegram doesn't retry
-  if (!telegram.enabled()) return;
+  if (!telegram.enabled()) return res.sendStatus(200);
   try { await telegram.handleUpdate(req.body); }
   catch (e) { console.error('Telegram handler error:', e.message); }
+  res.sendStatus(200); // respond after processing — Vercel kills the fn on response
 });
 
 // One-time setup: registers webhook + bot commands with Telegram.
