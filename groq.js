@@ -56,4 +56,23 @@ async function parseBillImage(buffer, mime = 'image/jpeg') {
   }], 'llama-3.2-11b-vision-preview');
 }
 
-module.exports = { enabled, parseBillText, parseBillImage };
+async function transcribeAudio(buffer, mime = 'audio/ogg') {
+  const form = new FormData();
+  form.append('file', new Blob([buffer], { type: mime }), 'voice.ogg');
+  form.append('model', 'whisper-large-v3-turbo');
+  form.append('response_format', 'json');
+  form.append('language', 'en');
+  const res = await fetch('https://api.groq.com/openai/v1/audio/transcriptions', {
+    method: 'POST',
+    headers: { 'Authorization': `Bearer ${process.env.GROQ_API_KEY}` },
+    body: form,
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Groq Whisper ${res.status}: ${err}`);
+  }
+  const data = await res.json();
+  return (data.text || '').trim();
+}
+
+module.exports = { enabled, parseBillText, parseBillImage, transcribeAudio };

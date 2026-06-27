@@ -468,6 +468,32 @@ async function handleUpdate(update) {
     return;
   }
 
+  // Voice message → transcribe → AI parse
+  if (msg.voice || msg.audio) {
+    if (session) await clearSession(chatId);
+    await sendMessage(chatId, '🎙 Transcribing…');
+    const fileId = (msg.voice || msg.audio).file_id;
+    const mime = msg.voice ? 'audio/ogg' : (msg.audio?.mime_type || 'audio/mpeg');
+    const { buffer } = await downloadFile(fileId);
+    let transcript = '';
+    if (groq.enabled()) {
+      try { transcript = await groq.transcribeAudio(buffer, mime); }
+      catch (e) { console.error('Whisper error:', e.message); }
+    }
+    if (!transcript) {
+      await sendMessage(chatId, '❌ Could not transcribe. Try typing the bill details instead.');
+      return;
+    }
+    await sendMessage(chatId, `🗣 _"${transcript}"_\n\nParsing…`);
+    let parsed = {};
+    if (groq.enabled()) {
+      try { parsed = await groq.parseBillText(transcript); }
+      catch (e) { console.error('Groq parse error:', e.message); }
+    }
+    await savePendingAndAsk(chatId, parsed, null, null, null);
+    return;
+  }
+
   // Photo / document → AI flow
   if (msg.photo || msg.document) {
     if (session) await clearSession(chatId);
