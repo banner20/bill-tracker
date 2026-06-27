@@ -468,6 +468,12 @@ async function handleUpdate(update) {
     return;
   }
 
+  // Helper: fetch tag names for Groq context
+  async function getTags() {
+    const r = await db.query('SELECT name FROM tags ORDER BY pinned DESC, name ASC');
+    return r.rows.map((t) => t.name);
+  }
+
   // Voice message → transcribe → AI parse
   if (msg.voice || msg.audio) {
     if (session) await clearSession(chatId);
@@ -487,7 +493,7 @@ async function handleUpdate(update) {
     await sendMessage(chatId, `🗣 _"${transcript}"_\n\nParsing…`);
     let parsed = {};
     if (groq.enabled()) {
-      try { parsed = await groq.parseBillText(transcript); }
+      try { parsed = await groq.parseBillText(transcript, await getTags()); }
       catch (e) { console.error('Groq parse error:', e.message); }
     }
     await savePendingAndAsk(chatId, parsed, null, null, null);
@@ -509,7 +515,7 @@ async function handleUpdate(update) {
     }
     let parsed = {};
     if (groq.enabled()) {
-      try { parsed = await groq.parseBillImage(buffer, mime); }
+      try { parsed = await groq.parseBillImage(buffer, mime, await getTags()); }
       catch (e) { console.error('Groq image error:', e.message); }
     }
     await savePendingAndAsk(chatId, parsed, url, publicId, mime);
@@ -521,7 +527,7 @@ async function handleUpdate(update) {
     await sendMessage(chatId, '🔍 Parsing with AI…');
     let parsed = {};
     if (groq.enabled()) {
-      try { parsed = await groq.parseBillText(text); }
+      try { parsed = await groq.parseBillText(text, await getTags()); }
       catch (e) { console.error('Groq text error:', e.message); }
     }
     await savePendingAndAsk(chatId, parsed, null, null, null);

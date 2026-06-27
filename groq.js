@@ -5,20 +5,26 @@
 
 const GROQ_URL = 'https://api.groq.com/openai/v1/chat/completions';
 
-const SYSTEM_PROMPT = `You are a bill/invoice parser. Extract structured data from the user's message or image.
+function buildPrompt(tags) {
+  const tagHint = tags && tags.length
+    ? `Existing bill types in the system (prefer these exact names if they match): ${tags.join(', ')}.`
+    : 'Use a sensible category like Electricity, Internet, Rent, Phone, Fuel, Grocery.';
+  return `You are a bill/invoice parser. Extract structured data from the user's message or image.
 Return ONLY a JSON object with exactly these fields (null for anything missing or unclear):
 {
-  "bill_type": "category e.g. Electricity, Internet, Rent, Phone, Fuel, Grocery, Water, Insurance",
+  "bill_type": "pick the best matching bill type",
   "vendor": "company or person name",
   "amount": 0.00,
   "bill_date": "YYYY-MM-DD",
   "note": "any extra relevant info or null"
 }
+${tagHint}
 For bill_date, use today if not mentioned. Amount must be a number, no currency symbols.`;
+}
 
 function enabled() { return !!process.env.GROQ_API_KEY; }
 
-async function callGroq(messages, model) {
+async function callGroq(messages, model, tags) {
   const res = await fetch(GROQ_URL, {
     method: 'POST',
     headers: {
@@ -27,7 +33,7 @@ async function callGroq(messages, model) {
     },
     body: JSON.stringify({
       model,
-      messages: [{ role: 'system', content: SYSTEM_PROMPT }, ...messages],
+      messages: [{ role: 'system', content: buildPrompt(tags) }, ...messages],
       response_format: { type: 'json_object' },
       temperature: 0.1,
       max_tokens: 300,
@@ -41,11 +47,11 @@ async function callGroq(messages, model) {
   return JSON.parse(data.choices[0].message.content);
 }
 
-async function parseBillText(text) {
-  return callGroq([{ role: 'user', content: text }], 'llama-3.1-8b-instant');
+async function parseBillText(text, tags) {
+  return callGroq([{ role: 'user', content: text }], 'llama-3.1-8b-instant', tags);
 }
 
-async function parseBillImage(buffer, mime = 'image/jpeg') {
+async function parseBillImage(buffer, mime = 'image/jpeg', tags) {
   const b64 = buffer.toString('base64');
   return callGroq([{
     role: 'user',
@@ -53,7 +59,7 @@ async function parseBillImage(buffer, mime = 'image/jpeg') {
       { type: 'image_url', image_url: { url: `data:${mime};base64,${b64}` } },
       { type: 'text', text: 'Parse this bill or receipt and extract the details.' },
     ],
-  }], 'llama-3.2-11b-vision-preview');
+  }], 'llama-3.2-11b-vision-preview', tags);
 }
 
 async function transcribeAudio(buffer, mime = 'audio/ogg') {
