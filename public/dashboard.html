@@ -74,6 +74,33 @@
     </div>
   </div>
 
+  <!-- Edit modal -->
+  <div class="modal-overlay" id="editModal" onclick="closeEditIfBg(event)">
+    <div class="modal">
+      <h2 style="margin:0 0 16px;font-size:18px">Edit Bill</h2>
+      <label>Bill Type *</label>
+      <input id="eBillType" type="text" placeholder="e.g. 3061, Electricity" />
+      <div class="row" style="margin-top:0">
+        <div><label>Amount</label><input id="eAmount" type="number" step="0.01" placeholder="0.00" /></div>
+        <div><label>Date</label><input id="eDate" type="date" /></div>
+      </div>
+      <label>Vendor</label>
+      <input id="eVendor" type="text" placeholder="Company / person name" />
+      <label>Status</label>
+      <select id="eStatus">
+        <option value="unpaid">Unpaid</option>
+        <option value="paid">Paid</option>
+        <option value="reviewed">Reviewed</option>
+      </select>
+      <label>Note</label>
+      <textarea id="eNote" style="min-height:56px" placeholder="Optional note"></textarea>
+      <div style="display:flex;gap:10px;margin-top:16px">
+        <button class="btn primary" style="flex:1" onclick="saveEdit()">Save changes</button>
+        <button class="btn ghost" onclick="closeEdit()">Cancel</button>
+      </div>
+    </div>
+  </div>
+
   <div class="lightbox" id="lightbox"><img id="lightboxImg" src="" alt="" /></div>
   <div class="toast" id="toast"></div>
   <script src="dashboard.js"></script>

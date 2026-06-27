@@ -101,13 +101,30 @@ async function upsertTag(name) {
   return r.rows[0].id;
 }
 
+// --- Rate limiter (login brute-force) ------------------------------------
+const loginAttempts = new Map(); // ip -> { count, resetAt }
+function checkRateLimit(ip) {
+  const now = Date.now();
+  const e = loginAttempts.get(ip);
+  if (e && now < e.resetAt) {
+    if (e.count >= 5) return false;
+    e.count++;
+  } else {
+    loginAttempts.set(ip, { count: 1, resetAt: now + 15 * 60 * 1000 });
+  }
+  return true;
+}
+
 // --- Login / session -----------------------------------------------------
 app.post('/api/login', (req, res) => {
+  const ip = (req.headers['x-forwarded-for'] || req.socket.remoteAddress || '').split(',')[0].trim();
+  if (!checkRateLimit(ip)) return res.status(429).json({ error: 'Too many attempts — wait 15 minutes.' });
   const { password } = req.body || {};
   let role = null;
   if (password && password === FINANCE_PASSWORD) role = 'finance';
   else if (password && password === ENTRY_PASSWORD) role = 'entry';
   if (!role) return res.status(401).json({ error: 'Wrong password' });
+  loginAttempts.delete(ip); // reset on success
   res.cookie('auth', sign(role), { httpOnly: true, sameSite: 'lax', maxAge: 30 * 24 * 60 * 60 * 1000 });
   res.json({ role });
 });
@@ -257,10 +274,36 @@ app.get('/api/bills/:id', requireAuth, async (req, res) => {
   res.json(bill);
 });
 
-// --- Update status (finance) --------------------------------------------
+// --- Update bill (finance) — status-only or full edit -------------------
 app.patch('/api/bills/:id', requireAuth, requireFinance, async (req, res) => {
-  const { status } = req.body || {};
-  if (!['unpaid', 'paid', 'reviewed'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
+  const { status, bill_type, vendor, amount, bill_date, note } = req.body || {};
+  const VALID_STATUS = ['unpaid', 'paid', 'reviewed'];
+
+  // Full edit when more than just status is sent
+  if (bill_type !== undefined || vendor !== undefined || amount !== undefined || bill_date !== undefined || note !== undefined) {
+    if (!bill_type || !String(bill_type).trim()) return res.status(400).json({ error: 'Bill type required' });
+    if (status && !VALID_STATUS.includes(status)) return res.status(400).json({ error: 'Invalid status' });
+    const newType = String(bill_type).trim();
+    const r = await db.query(`
+      UPDATE bills SET bill_type=$1, vendor=$2, amount=$3, bill_date=$4, note=$5
+        ${status ? ', status=$6' : ''}
+      WHERE id=${status ? '$7' : '$6'} RETURNING id`,
+      status
+        ? [newType, vendor || null, amount != null ? Number(amount) : null, bill_date || null, note || null, status, req.params.id]
+        : [newType, vendor || null, amount != null ? Number(amount) : null, bill_date || null, note || null, req.params.id],
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'Not found' });
+    // Re-sync tags: delete old links, upsert new ones from bill_type
+    await db.query('DELETE FROM bill_tags WHERE bill_id = $1', [req.params.id]);
+    for (const name of newType.split(',').map((s) => s.trim()).filter(Boolean)) {
+      const tagId = await upsertTag(name);
+      if (tagId) await db.query('INSERT INTO bill_tags (bill_id, tag_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [req.params.id, tagId]);
+    }
+    return res.json({ ok: true });
+  }
+
+  // Status-only update (existing quick buttons)
+  if (!VALID_STATUS.includes(status)) return res.status(400).json({ error: 'Invalid status' });
   const r = await db.query('UPDATE bills SET status = $1 WHERE id = $2', [status, req.params.id]);
   if (!r.rowCount) return res.status(404).json({ error: 'Not found' });
   sheets.syncBill(req.params.id);
@@ -318,9 +361,8 @@ app.get('/api/export.csv', requireExportAuth, async (req, res) => {
   res.send(lines.join('\n'));
 });
 
-// --- XLSX export ---------------------------------------------------------
-app.get('/api/export.xlsx', requireAuth, requireFinance, async (req, res) => {
-  const bills = await fetchAllBills();
+// --- XLSX generation (shared) --------------------------------------------
+function generateXlsx(bills) {
   const headers = ['ID', 'Date', 'Bill Type', 'Vendor', 'Amount', 'Currency', 'Status', 'Due Date', 'Tags', 'Note', 'Proof'];
   const rows = [
     headers,
@@ -337,20 +379,53 @@ app.get('/api/export.xlsx', requireAuth, requireFinance, async (req, res) => {
   ];
   const ws = XLSX.utils.aoa_to_sheet(rows);
   ws['!cols'] = [6, 12, 18, 20, 12, 8, 10, 12, 22, 30, 60].map((wch) => ({ wch }));
-
-  // Make each proof cell a clickable hyperlink (first attachment URL)
   bills.forEach((b, i) => {
     const atts = b.attachments || [];
     if (!atts.length) return;
-    const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 10 }); // row i+1 (skip header), col 10 = Proof
+    const cellRef = XLSX.utils.encode_cell({ r: i + 1, c: 10 });
     if (ws[cellRef]) ws[cellRef].l = { Target: atts[0].url, Tooltip: 'Open proof' };
   });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Bills');
-  const buf = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+  return XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+}
+
+// --- XLSX export ---------------------------------------------------------
+app.get('/api/export.xlsx', requireAuth, requireFinance, async (req, res) => {
+  const buf = generateXlsx(await fetchAllBills());
   res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
   res.setHeader('Content-Disposition', `attachment; filename="bills-${new Date().toISOString().slice(0, 10)}.xlsx"`);
   res.send(buf);
+});
+
+// --- Weekly cron: ping DB + send Excel backup to Telegram ----------------
+app.get('/api/cron/weekly', async (req, res) => {
+  const cronSecret = process.env.CRON_SECRET;
+  const isVercel = cronSecret && req.headers.authorization === `Bearer ${cronSecret}`;
+  const isManual = roleOf(req) === 'finance';
+  if (!isVercel && !isManual) return res.status(401).json({ error: 'Unauthorized' });
+
+  try {
+    await db.query('SELECT 1'); // keep Supabase alive
+
+    const backupChatId = process.env.TELEGRAM_BACKUP_CHAT_ID;
+    const tgToken = process.env.TELEGRAM_BOT_TOKEN;
+    if (backupChatId && tgToken) {
+      const bills = await fetchAllBills();
+      const buf = generateXlsx(bills);
+      const date = new Date().toISOString().slice(0, 10);
+      const form = new FormData();
+      form.append('chat_id', backupChatId);
+      form.append('document', new Blob([buf], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' }), `bills-${date}.xlsx`);
+      form.append('caption', `📊 Weekly backup — ${date}\n${bills.length} bill${bills.length === 1 ? '' : 's'} total`);
+      await fetch(`https://api.telegram.org/bot${tgToken}/sendDocument`, { method: 'POST', body: form });
+    }
+
+    res.json({ ok: true, pingedAt: new Date().toISOString(), backupSent: !!(backupChatId && tgToken) });
+  } catch (e) {
+    console.error('Cron error:', e);
+    res.status(500).json({ error: e.message });
+  }
 });
 
 // --- Google Sheets IMPORTDATA URL ----------------------------------------

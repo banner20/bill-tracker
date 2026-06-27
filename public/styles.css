@@ -231,6 +231,18 @@ table.bills tfoot td.amount { color: var(--text); font-weight: 700; }
 .group-body { border: 1px solid var(--border); border-top: none; border-radius: 0 0 10px 10px; overflow: hidden; }
 .group-body table.bills { min-width: 560px; border: none; }
 
+/* Edit modal */
+.modal-overlay {
+  position: fixed; inset: 0; background: rgba(0,0,0,0.75);
+  display: none; align-items: center; justify-content: center; z-index: 200; padding: 20px;
+}
+.modal-overlay.show { display: flex; }
+.modal {
+  background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+  padding: 20px; width: 100%; max-width: 460px; max-height: 90vh; overflow-y: auto;
+  box-shadow: var(--shadow);
+}
+
 /* Login */
 .login-wrap { max-width: 380px; margin: 12vh auto 0; padding: 0 20px; text-align: center; }
 .login-wrap .logo { font-size: 40px; margin-bottom: 6px; }

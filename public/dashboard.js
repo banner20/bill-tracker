@@ -94,6 +94,8 @@ $('loginForm').addEventListener('submit', async (e) => {
     if (role !== 'finance') { $('loginErr').textContent = 'That password does not have dashboard access.'; return; }
     $('pw').value = '';
     showDash(); refresh(); loadTags();
+  } else if (res.status === 429) {
+    $('loginErr').textContent = 'Too many attempts — wait 15 minutes.';
   } else {
     $('loginErr').textContent = 'Wrong password, try again.';
   }
@@ -314,6 +316,7 @@ function renderBill(b) {
         ${statusBtn(b, 'paid', 'Mark paid')}
         ${statusBtn(b, 'reviewed', 'Mark reviewed')}
         ${statusBtn(b, 'unpaid', 'Mark unpaid')}
+        <button class="btn sm ghost" onclick="openEdit(${b.id})">Edit</button>
         <button class="btn sm danger" onclick="del(${b.id})">Delete</button>
       </div>
     </div>`;
@@ -335,6 +338,49 @@ window.setStatus = async (id, status) => {
     toast('Updated ✓');
     refresh();
   } catch { toast('Update failed', true); }
+};
+
+// ---- Edit bill -----------------------------------------------------------
+let editId = null;
+
+window.openEdit = (id) => {
+  const b = currentBills.find((x) => x.id === id);
+  if (!b) return;
+  editId = id;
+  $('eBillType').value = (b.tags && b.tags.length) ? b.tags.join(', ') : (b.bill_type || '');
+  $('eVendor').value = b.vendor || '';
+  $('eAmount').value = b.amount != null ? b.amount : '';
+  $('eDate').value = b.bill_date || '';
+  $('eStatus').value = b.status || 'unpaid';
+  $('eNote').value = b.note || '';
+  $('editModal').classList.add('show');
+};
+
+window.closeEdit = () => { $('editModal').classList.remove('show'); editId = null; };
+window.closeEditIfBg = (e) => { if (e.target === $('editModal')) closeEdit(); };
+
+window.saveEdit = async () => {
+  if (!editId) return;
+  const billType = $('eBillType').value.trim();
+  if (!billType) { toast('Bill type is required', true); return; }
+  try {
+    const res = await api(`/api/bills/${editId}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        bill_type: billType,
+        vendor: $('eVendor').value.trim() || null,
+        amount: $('eAmount').value !== '' ? Number($('eAmount').value) : null,
+        bill_date: $('eDate').value || null,
+        status: $('eStatus').value,
+        note: $('eNote').value.trim() || null,
+      }),
+    });
+    if (!res.ok) { const { error } = await res.json(); toast(error || 'Save failed', true); return; }
+    toast('Saved ✓');
+    closeEdit();
+    refresh(); loadTags();
+  } catch { toast('Save failed', true); }
 };
 
 window.del = async (id) => {
