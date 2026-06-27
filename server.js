@@ -445,20 +445,35 @@ app.post('/api/telegram', async (req, res) => {
   catch (e) { console.error('Telegram handler error:', e.message); }
 });
 
-// One-time setup: registers the webhook URL with Telegram.
+// One-time setup: registers webhook + bot commands with Telegram.
 // Visit /api/telegram/setup in a browser after deploying.
 app.get('/api/telegram/setup', async (req, res) => {
   if (!telegram.enabled()) return res.status(400).json({ error: 'TELEGRAM_BOT_TOKEN not set' });
-  const host = req.headers.host;
   const proto = req.headers['x-forwarded-proto'] || 'https';
-  const webhookUrl = `${proto}://${host}/api/telegram`;
-  const r = await fetch(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/setWebhook`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] }),
-  });
-  const data = await r.json();
-  res.json({ webhookUrl, telegram: data });
+  const webhookUrl = `${proto}://${req.headers.host}/api/telegram`;
+  const token = process.env.TELEGRAM_BOT_TOKEN;
+
+  const [webhookRes, commandsRes] = await Promise.all([
+    fetch(`https://api.telegram.org/bot${token}/setWebhook`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ url: webhookUrl, allowed_updates: ['message', 'callback_query'] }),
+    }).then((r) => r.json()),
+    fetch(`https://api.telegram.org/bot${token}/setMyCommands`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        commands: [
+          { command: 'start',   description: 'Welcome + show menu' },
+          { command: 'recent',  description: 'Last 5 bills' },
+          { command: 'unpaid',  description: 'All unpaid bills' },
+          { command: 'summary', description: 'Totals by bill type' },
+        ],
+      }),
+    }).then((r) => r.json()),
+  ]);
+
+  res.json({ webhookUrl, webhook: webhookRes, commands: commandsRes });
 });
 
 // --- Static frontend -----------------------------------------------------
