@@ -83,6 +83,14 @@ function init() {
         created_at TIMESTAMPTZ NOT NULL DEFAULT now()
       );
       DELETE FROM tg_pending WHERE created_at < now() - interval '1 day';
+
+      CREATE TABLE IF NOT EXISTS tg_sessions (
+        chat_id    BIGINT PRIMARY KEY,
+        step       TEXT NOT NULL,
+        data       JSONB NOT NULL DEFAULT '{}'::jsonb,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+      );
+      DELETE FROM tg_sessions WHERE updated_at < now() - interval '1 day';
     `).catch((err) => {
       initPromise = null; // allow retry on next request
       throw err;
