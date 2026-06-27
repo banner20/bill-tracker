@@ -174,6 +174,15 @@ function formatParsed(p) {
   ].filter(Boolean).join('\n');
 }
 
+function confirmKeyboard(pendingId) {
+  return {
+    inline_keyboard: [
+      [{ text: '✅ Save', callback_data: `save:${pendingId}` }, { text: '❌ Cancel', callback_data: `cancel:${pendingId}` }],
+      [{ text: '🏷 Change type', callback_data: `picktag:${pendingId}` }],
+    ],
+  };
+}
+
 async function savePendingAndAsk(chatId, parsed, url, publicId, mime) {
   const pendingId = crypto.randomBytes(8).toString('hex');
   await db.query(
@@ -184,12 +193,7 @@ async function savePendingAndAsk(chatId, parsed, url, publicId, mime) {
     chat_id: chatId,
     text: formatParsed(parsed) + '\n\nSave this to the dashboard?',
     parse_mode: 'Markdown',
-    reply_markup: {
-      inline_keyboard: [[
-        { text: '✅ Save', callback_data: `save:${pendingId}` },
-        { text: '❌ Cancel', callback_data: `cancel:${pendingId}` },
-      ]],
-    },
+    reply_markup: confirmKeyboard(pendingId),
   });
 }
 
@@ -215,6 +219,57 @@ async function handleUpdate(update) {
           reply_markup: { inline_keyboard: [statusButtons(bill.id, bill.status)] },
         });
       }
+      return;
+    }
+
+    // Tag picker — show all tags as buttons
+    if (data.startsWith('picktag:')) {
+      const pendingId = data.slice(8);
+      const tags = await db.query('SELECT name FROM tags ORDER BY pinned DESC, name ASC');
+      const rows = [];
+      const names = tags.rows.map((t) => t.name);
+      for (let i = 0; i < names.length; i += 3) {
+        rows.push(names.slice(i, i + 3).map((name) => ({
+          text: name,
+          callback_data: `settag:${pendingId}:${name}`.slice(0, 64),
+        })));
+      }
+      rows.push([{ text: '← Back', callback_data: `back:${pendingId}` }]);
+      await tgPost('editMessageText', {
+        chat_id: chatId, message_id: message.message_id,
+        text: '🏷 *Pick a bill type:*', parse_mode: 'Markdown',
+        reply_markup: { inline_keyboard: rows },
+      });
+      return;
+    }
+
+    // Tag selected — update pending data and return to confirm
+    if (data.startsWith('settag:')) {
+      const parts = data.split(':');
+      const pendingId = parts[1];
+      const tagName = parts.slice(2).join(':');
+      const r = await db.query('SELECT * FROM tg_pending WHERE id = $1', [pendingId]);
+      if (!r.rows.length) { await sendMessage(chatId, '⏱ Expired. Send the bill again.'); return; }
+      const newData = { ...r.rows[0].data, bill_type: tagName };
+      await db.query('UPDATE tg_pending SET data = $1 WHERE id = $2', [JSON.stringify(newData), pendingId]);
+      await tgPost('editMessageText', {
+        chat_id: chatId, message_id: message.message_id,
+        text: formatParsed(newData) + '\n\nSave this to the dashboard?',
+        parse_mode: 'Markdown', reply_markup: confirmKeyboard(pendingId),
+      });
+      return;
+    }
+
+    // Back to confirm view from tag picker
+    if (data.startsWith('back:')) {
+      const pendingId = data.slice(5);
+      const r = await db.query('SELECT * FROM tg_pending WHERE id = $1', [pendingId]);
+      if (!r.rows.length) { await sendMessage(chatId, '⏱ Expired. Send the bill again.'); return; }
+      await tgPost('editMessageText', {
+        chat_id: chatId, message_id: message.message_id,
+        text: formatParsed(r.rows[0].data) + '\n\nSave this to the dashboard?',
+        parse_mode: 'Markdown', reply_markup: confirmKeyboard(pendingId),
+      });
       return;
     }
 
