@@ -76,11 +76,14 @@ function statusButtons(billId, currentStatus) {
   return b;
 }
 
-function confirmKeyboard(pendingId) {
+function confirmKeyboard(pendingId, hasPhoto = false) {
   return {
     inline_keyboard: [
       [{ text: '✅ Save', callback_data: `save:${pendingId}` }, { text: '❌ Cancel', callback_data: `cancel:${pendingId}` }],
-      [{ text: '🏷 Change type', callback_data: `picktag:${pendingId}` }],
+      [
+        { text: hasPhoto ? '🖼 Replace photo' : '📎 Attach photo', callback_data: `aphoto:${pendingId}` },
+        { text: '🏷 Change type', callback_data: `picktag:${pendingId}` },
+      ],
     ],
   };
 }
@@ -283,7 +286,7 @@ async function savePendingAndAsk(chatId, parsed, url, publicId, mime) {
     chat_id: chatId,
     text: formatParsed(parsed) + '\n\nSave this to the dashboard?',
     parse_mode: 'Markdown',
-    reply_markup: confirmKeyboard(pendingId),
+    reply_markup: confirmKeyboard(pendingId, !!url),
   });
 }
 
@@ -345,6 +348,17 @@ async function handleUpdate(update) {
         text: formatParsed(r.rows[0].data) + '\n\nSave this to the dashboard?',
         parse_mode: 'Markdown', reply_markup: confirmKeyboard(pendingId),
       });
+      return;
+    }
+
+    // Attach / replace photo on a pending bill
+    if (data.startsWith('aphoto:')) {
+      const pendingId = data.slice(7);
+      const r = await db.query('SELECT id FROM tg_pending WHERE id=$1', [pendingId]);
+      if (!r.rows.length) { await sendMessage(chatId, '⏱ Expired. Send the bill again.'); return; }
+      await setSession(chatId, 'attach_photo', { pendingId });
+      await tgPost('editMessageReplyMarkup', { chat_id: chatId, message_id: message.message_id, reply_markup: { inline_keyboard: [] } });
+      await sendMessage(chatId, '📷 Send the photo or screenshot to attach:');
       return;
     }
 
@@ -462,8 +476,8 @@ async function handleUpdate(update) {
   if (text === '💰 Unpaid'  || text.startsWith('/unpaid'))  { await showUnpaid(chatId); return; }
   if (text === '📊 Summary' || text.startsWith('/summary')) { await showSummary(chatId); return; }
 
-  // Active manual session — route text to the current step
-  if (session && session.step !== 'pick_tag') {
+  // Active manual session — route text to the current step (photos handled below)
+  if (session && session.step !== 'pick_tag' && session.step !== 'attach_photo' && text) {
     await handleSessionText(chatId, text, session);
     return;
   }
@@ -500,14 +514,41 @@ async function handleUpdate(update) {
     return;
   }
 
-  // Photo / document → AI flow
+  // Photo / document
   if (msg.photo || msg.document) {
-    if (session) await clearSession(chatId);
-    await sendMessage(chatId, '🔍 Reading your bill…');
     let fileId, mime;
     if (msg.photo) { fileId = msg.photo[msg.photo.length - 1].file_id; mime = 'image/jpeg'; }
     else           { fileId = msg.document.file_id; mime = msg.document.mime_type || 'application/octet-stream'; }
     const { buffer } = await downloadFile(fileId);
+
+    // Attach photo to an existing pending bill
+    if (session && session.step === 'attach_photo') {
+      const { pendingId } = session.data;
+      await clearSession(chatId);
+      const r = await db.query('SELECT * FROM tg_pending WHERE id=$1', [pendingId]);
+      if (!r.rows.length) { await sendMessage(chatId, '⏱ Expired. Send the bill again.'); return; }
+      const pending = r.rows[0];
+      if (pending.public_id && storage.enabled()) {
+        try { await storage.destroy(pending.public_id); } catch (_) {}
+      }
+      let url = null, publicId = null;
+      if (storage.enabled()) {
+        try { const up = await storage.upload(buffer, { mime, folder: 'telegram' }); url = up.url; publicId = up.public_id; }
+        catch (e) { console.error('Storage error:', e.message); }
+      }
+      await db.query('UPDATE tg_pending SET url=$1, public_id=$2, mime=$3 WHERE id=$4', [url, publicId, mime, pendingId]);
+      await tgPost('sendMessage', {
+        chat_id: chatId,
+        text: formatParsed(pending.data) + '\n\n📎 _Photo attached._\n\nSave this to the dashboard?',
+        parse_mode: 'Markdown',
+        reply_markup: confirmKeyboard(pendingId, true),
+      });
+      return;
+    }
+
+    // New bill via AI photo parse
+    if (session) await clearSession(chatId);
+    await sendMessage(chatId, '🔍 Reading your bill…');
     let url = null, publicId = null;
     if (storage.enabled()) {
       try { const up = await storage.upload(buffer, { mime, folder: 'telegram' }); url = up.url; publicId = up.public_id; }
